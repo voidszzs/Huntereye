@@ -10,7 +10,7 @@ VENV_DIR = Path(".venv")
 LOG_DIR = Path("logs")
 SHOT_DIR = Path("screenshots")
 REQUIRED_APT = ["xdotool", "python3-venv", "python3-full", "python3-dev", "libx11-dev"]
-REQUIRED_PY = ["pynput", "mss", "evdev"]
+REQUIRED_PY = ["pynput", "mss", "evdev", "requests"]
 
 
 def run(cmd, check=False):
