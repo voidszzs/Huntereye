@@ -1,42 +1,66 @@
-# hunter3eye v8
+# hunter3eye
 
-terminal multitool — recon, live monitoring, port scanner, stress groups.
-windows 11 + kali. python 3.11+. monochrome CLI.
+terminal multitool for recon, live monitoring, port scanning and stress testing.
 
-## run
+runs on **windows 11** and **kali linux** (and most debian/ubuntu variants).  
+100% python. monochrome terminal UI. no browser. no daemon.
 
-    py run.py                (windows)
-    python3 run.py           (linux)
+---
 
-or double-click `hunter3eye.bat` on windows, or `./hunter3eye.sh` on linux.
+## what it does
 
-## menu
+| menu | feature | what it does |
+|------|---------|--------------|
+| 01 | target      | set the ip / host / url / lab the tool works on |
+| 02 | dossier     | recon: ports, services, tls, deps, costmap |
+| 03 | vectors     | stress groups (l3 / l4 / tls / http / dns / game / app / auth / ipv6) |
+| 04 | adaptive    | vectors + live latency monitor + retune |
+| 05 | multipliers | origin hunt, rate-limit bypass, waf bypass helpers |
+| 06 | lab         | spin up local test targets (nginx, http2, ws, dns, mc) |
+| 07 | all         | fire every applicable vector at once |
+| 08 | monitor     | live up/down panel with ping stats |
+| 09 | ping        | continuous ping with bar graph |
+| 10 | ports       | port scanner (quick 1-1024 or full 1-65535) |
+| 11 | iplookup    | geo / isp / asn / reverse dns of the target's ip |
+| 12 | settings    | edit settings.yaml + debug toggles from inside |
+| 13 | help        | usage + safety |
+| 99 | ask         | built-in help desk (type a question) |
+| 00 | exit        | leave |
 
-- `[01]` target      — set ipv4 / host / url / lab
-- `[02]` dossier     — recon, no traffic
-- `[03]` vectors     — stress groups
-- `[04]` adaptive    — vectors + live monitor
-- `[05]` multipliers — origin hunt
-- `[06]` lab         — local targets
-- `[07]` all         — fire everything
-- `[08]` monitor     — live status view
-- `[09]` ping        — continuous ping
-- `[10]` ports       — port scanner
-- `[11]` settings
-- `[12]` help
-- `[00]` exit
-
-## target
-
-set once with `[01]`. the status panel on the right shows the target
-and live up/down + ping ms, updating every 3 seconds.
-
-## fire gate
-
-read-only features (dossier, monitor, ping, ports) run with no gate.
-fire features (vectors, multipliers, all) ask you to retype the target.
-if you can't retype it, you don't own it.
+---
 
 ## safety
 
-no source-address spoofing. no csam, ever.
+read this before anything else.
+
+- **no spoofing anywhere in this tool.** every packet uses the real
+  outbound address of the machine you're on. the classic amplification
+  vectors (memcached, ntp, dns reflector) are not implemented because
+  they need spoofed source, which vpns and isps drop anyway.
+- **no csam, ever, in any form.**
+- **fire features (03, 05, 07) require you to retype the target** before
+  they run. if you can't retype it, you don't own it.
+- **read-only features (02, 08, 09, 10, 11) run without the gate.**
+- **run against targets you own.** home router, your own laptop, a vm,
+  the built-in lab. firing at anything else is a crime in most countries.
+- **this tool is for research and lab use.** don't be the reason it gets
+  taken down.
+
+---
+
+## install — windows 11
+
+### 1. install python
+
+download **python 3.11 or newer** from https://www.python.org/downloads/windows/
+
+during install, on the first screen, **check both boxes**:
+- ☑ Add python.exe to PATH
+- ☑ Install py launcher for all users (recommended)
+
+then reboot (windows needs a full logout/login for PATH to update).
+
+verify in cmd:
+
+```cmd
+py --version
