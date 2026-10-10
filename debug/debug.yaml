@@ -1,0 +1,12 @@
+# hunter3eye debug toggles. global: true turns everything on.
+global: false
+ui: false
+status: false
+recon: false
+recon_host: false
+recon_costmap: false
+vectors: false
+vectors_selector: false
+adaptive: false
+multipliers: false
+lab: false

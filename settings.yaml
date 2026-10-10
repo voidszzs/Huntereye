@@ -1,0 +1,30 @@
+general:
+  version: "8.0.0"
+  show_banner: true
+
+paths:
+  output_dir: "out"
+
+network:
+  default_rate: 50
+  default_duration: 30
+  default_timeout: 5
+
+status:
+  enabled: true
+  interval: 3
+  log_changes: true
+
+recon:
+  services: true
+  deps: true
+  costmap: true
+
+vectors:
+  allow_reckless: false
+
+safety:
+  require_retype_on_fire: true
+
+ui:
+  box_width: 80
